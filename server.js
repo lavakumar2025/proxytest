@@ -5,19 +5,17 @@ const cors = require('cors');
 const app = express();
 app.use(cors());
 
-// Hardcoded Hotstar Credentials from working link
+// Working stream setup
 const TARGET_STREAM_URL = "https://live09p.hotstar.com/mp2/incagbsgallow-biggboss-tel-2026/f129670ca03b4bb988c841f9bbdce777/index_6.m3u8";
 const HOTSTAR_COOKIE = "hdntl=exp=1788915321~acl=%2f*~id=ce664760244f5188245a9776e013484c~data=hdntl~hmac=9d524a5d966a435827bddc85ca40839fc4c6041f4858bad384fe34a152b348e0";
 const USER_AGENT = "Hotstar;in.startv.hotstar/25.02.24.8.11169@Premium Plugx(Android/15)";
 
-// Status endpoint
 app.get('/', (req, res) => {
-  res.send('Hotstar Stream Proxy is Live and Ready!');
+  res.send('Local Hotstar Proxy Running!');
 });
 
-// Dynamic / Live Stream Handler
+// Primary stream endpoint
 app.get('/live.m3u8', async (req, res) => {
-  // Allow custom URL query or fall back to hardcoded default stream URL
   const streamUrl = req.query.url || TARGET_STREAM_URL;
   const cookie = req.query.cookie || HOTSTAR_COOKIE;
 
@@ -31,53 +29,46 @@ app.get('/live.m3u8', async (req, res) => {
         'Origin': 'https://www.hotstar.com',
         'Cookie': cookie
       },
-      responseType: 'stream' // Pipe raw stream data directly
+      responseType: 'arraybuffer'
     });
 
-    // Pass through key headers to the player
-    res.set('Access-Control-Allow-Origin', '*');
-    res.set('Content-Type', response.headers['content-type'] || 'application/vnd.apple.mpegurl');
+    let content = response.data;
+    const contentType = response.headers['content-type'] || '';
 
-    // Pipe response stream straight to NS Player / Web Player
-    response.data.pipe(res);
+    // Rewrite relative sub-segment URLs to loop through the local server
+    if (streamUrl.includes('.m3u8') || contentType.includes('mpegurl')) {
+      let manifestText = content.toString('utf-8');
+      const host = `http://localhost:${PORT}`;
 
-  } catch (err) {
-    console.error("Stream request error:", err.message);
-    const statusCode = err.response ? err.response.status : 500;
-    res.status(statusCode).send(`Error fetching stream: ${err.message}`);
-  }
-});
+      manifestText = manifestText.split('\n').map(line => {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('#')) return line;
 
-// Catch-all segment proxy endpoint for referenced .ts or sub .m3u8 files
-app.get('/proxy', async (req, res) => {
-  const targetUrl = req.query.url;
-  if (!targetUrl) return res.status(400).send("Missing target URL");
+        let absoluteSegmentUrl;
+        try {
+          absoluteSegmentUrl = new URL(trimmed, streamUrl).href;
+        } catch (e) {
+          absoluteSegmentUrl = trimmed;
+        }
 
-  try {
-    const response = await axios({
-      method: 'get',
-      url: targetUrl,
-      headers: {
-        'User-Agent': USER_AGENT,
-        'Referer': 'https://www.hotstar.com/',
-        'Origin': 'https://www.hotstar.com',
-        'Cookie': HOTSTAR_COOKIE
-      },
-      responseType: 'stream'
-    });
+        return `${host}/live.m3u8?url=${encodeURIComponent(absoluteSegmentUrl)}&cookie=${encodeURIComponent(cookie)}`;
+      }).join('\n');
 
-    res.set('Access-Control-Allow-Origin', '*');
-    if (response.headers['content-type']) {
-      res.set('Content-Type', response.headers['content-type']);
+      content = Buffer.from(manifestText, 'utf-8');
     }
-    response.data.pipe(res);
+
+    res.set('Access-Control-Allow-Origin', '*');
+    res.set('Content-Type', contentType || 'application/vnd.apple.mpegurl');
+    res.send(content);
 
   } catch (err) {
-    res.status(500).send(err.message);
+    console.error("Local Fetch Error:", err.message);
+    const statusCode = err.response ? err.response.status : 500;
+    res.status(statusCode).send(`Error ${statusCode}: Local request to Hotstar failed.`);
   }
 });
 
-const PORT = process.env.PORT || 3000;
+const PORT = 3000;
 app.listen(PORT, () => {
-  console.log(`Hotstar Raw Streamer listening on port ${PORT}`);
+  console.log(`Local Server active at http://localhost:${PORT}`);
 });
